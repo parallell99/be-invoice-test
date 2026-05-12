@@ -2,25 +2,24 @@
  * Run SQL files in BE/migrations in order (001_*.sql, 002_*.sql, ...).
  * Tracks applied versions in schema_migrations.
  *
- * Usage: from BE folder — npm run migrate
+ * CLI: npm run migrate
+ * Server: import { runMigrations } from '../scripts/migrate.mjs' (see src/index.js)
  *
  * Env: DATABASE_URL (required). MIGRATIONS_DIR (optional) — default BE/migrations.
  */
 import 'dotenv/config'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import pg from 'pg'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const migrationsDir =
-  (process.env.MIGRATIONS_DIR && process.env.MIGRATIONS_DIR.trim()) ||
-  path.join(__dirname, '..', 'migrations')
 
-const DATABASE_URL = process.env.DATABASE_URL
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL in environment (BE/.env)')
-  process.exit(1)
+function migrationsDirPath () {
+  return (
+    (process.env.MIGRATIONS_DIR && process.env.MIGRATIONS_DIR.trim()) ||
+    path.join(__dirname, '..', 'migrations')
+  )
 }
 
 async function ensureMigrationsTable (client) {
@@ -39,7 +38,13 @@ async function appliedVersions (client) {
   return new Set(rows.map((r) => r.version))
 }
 
-async function main () {
+export async function runMigrations () {
+  const DATABASE_URL = process.env.DATABASE_URL
+  if (!DATABASE_URL) {
+    throw new Error('Missing DATABASE_URL in environment (BE/.env)')
+  }
+
+  const migrationsDir = migrationsDirPath()
   const files = (await readdir(migrationsDir))
     .filter((f) => f.endsWith('.sql') && /^\d{3}_/.test(f))
     .sort()
@@ -86,7 +91,19 @@ async function main () {
   console.log('Migrations finished.')
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+function isMainModule () {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try {
+    return import.meta.url === pathToFileURL(path.resolve(entry)).href
+  } catch {
+    return false
+  }
+}
+
+if (isMainModule()) {
+  runMigrations().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}

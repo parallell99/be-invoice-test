@@ -2,6 +2,7 @@ import 'dotenv/config'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import express from 'express'
+import { runMigrations } from '../scripts/migrate.mjs'
 import authRoutes from './routes/auth.js'
 import invoiceRoutes from './routes/invoices.js'
 
@@ -46,6 +47,17 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'server error' })
 })
 
-app.listen(PORT, () => {
-  console.log(`invoice-api http://localhost:${PORT}`)
+async function start () {
+  if (process.env.SKIP_MIGRATIONS_ON_START !== '1') {
+    console.log('Running DB migrations...')
+    await runMigrations()
+  }
+  app.listen(PORT, () => {
+    console.log(`invoice-api http://localhost:${PORT}`)
+  })
+}
+
+start().catch((err) => {
+  console.error(err)
+  process.exit(1)
 })
