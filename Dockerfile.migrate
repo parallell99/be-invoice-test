@@ -1,0 +1,9 @@
+# รัน migrate ใน container (build context = รากโปรเจกต์ invoice-test)
+FROM node:22-alpine
+WORKDIR /app
+COPY BE/package.json BE/package-lock.json ./
+RUN npm ci --omit=dev
+COPY BE/scripts/migrate.mjs ./scripts/
+COPY BE/migrations ./migrations/
+ENV MIGRATIONS_DIR=/app/migrations
+CMD ["node", "./scripts/migrate.mjs"]
