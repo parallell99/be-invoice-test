@@ -6,7 +6,8 @@
 #     ตัวแปรที่ใช้ในโค้ด: PORT, DATABASE_URL, JWT_SECRET, FRONTEND_ORIGIN
 #     ทางเลือก: TRUST_PROXY=1, SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE
 #
-# ทุกครั้งที่ deploy จะ scp .env ไปที่ DEPLOY_PATH/.env จาก BE_DOTENV (rsync ยังไม่ส่ง .env จาก repo)
+# ทุกครั้งที่ deploy จะ scp .env ไปที่ DEPLOY_PATH/.env จาก BE_DOTENV (archive ไม่ส่ง .env จาก repo)
+# ส่งโค้ดด้วย tar ผ่าน SSH — ไม่ต้องติดตั้ง rsync บนเซิร์ฟเวอร์ (rsync over SSH ต้องมี rsync ทั้งสองฝั่ง)
 #
 # ตั้งค่า Ubuntu ครั้งเดียว (ตัวอย่าง — รันบนเซิร์ฟเวอร์):
 #   - ติดตั้ง Node.js LTS (เช่น 22) ให้ตรงกับ CI — https://github.com/nodesource/distributions
@@ -33,8 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install rsync + OpenSSH client
-        run: sudo apt-get update -qq && sudo apt-get install -y rsync openssh-client
+      - name: Install OpenSSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y openssh-client
 
       - name: Configure SSH key
         run: |
@@ -43,18 +44,17 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Rsync to Ubuntu server
-        env:
-          SSH_OPTS: '-i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes'
+      - name: Upload app to server (tar over SSH)
         run: |
-          rsync -avz --delete \
-            -e "ssh $SSH_OPTS" \
-            ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}/" \
-            --exclude node_modules \
-            --exclude .env \
-            --exclude .git \
-            --exclude .github \
-            --exclude logs
+          tar -C . -czf - \
+            --exclude='./node_modules' \
+            --exclude='./.git' \
+            --exclude='./.github' \
+            --exclude='./logs' \
+            --exclude='./.env' \
+            . | ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "bash -lc 'set -e; mkdir -p \"${{ secrets.DEPLOY_PATH }}\"; tar -xzf - -C \"${{ secrets.DEPLOY_PATH }}\"'"
 
       - name: Write .env on server from BE_DOTENV
         env:

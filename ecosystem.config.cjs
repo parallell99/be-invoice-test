@@ -1,5 +1,6 @@
 /**
  * PM2 — รัน API production
+ * พอร์ต: อ่านจาก .env (PORT) — ถ้าไม่ตั้ง โค้ดใช้ค่าเริ่มต้น 4000 (BE/src/index.js)
  * บนเซิร์ฟเวอร์: cd <path-to-BE> && pm2 start ecosystem.config.cjs
  */
 
