@@ -1,0 +1,80 @@
+# Deploy backend → Ubuntu เซิร์ฟเวอร์ ด้วย PM2 (repo ราก = โปรเจกต์ API)
+#
+# Secrets:
+#   SSH_PRIVATE_KEY, SSH_HOST, SSH_USER, DEPLOY_PATH
+#   BE_DOTENV — เนื้อหาไฟล์ .env ทั้งก้อน (หลายบรรทัด) คัดลอกจาก BE/.env แล้วแก้เป็นค่า production
+#     ตัวแปรที่ใช้ในโค้ด: PORT, DATABASE_URL, JWT_SECRET, FRONTEND_ORIGIN
+#     ทางเลือก: TRUST_PROXY=1, SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE
+#
+# ทุกครั้งที่ deploy จะ scp .env ไปที่ DEPLOY_PATH/.env จาก BE_DOTENV (rsync ยังไม่ส่ง .env จาก repo)
+#
+# ตั้งค่า Ubuntu ครั้งเดียว (ตัวอย่าง — รันบนเซิร์ฟเวอร์):
+#   - ติดตั้ง Node.js LTS (เช่น 22) ให้ตรงกับ CI — https://github.com/nodesource/distributions
+#   - sudo npm install -g pm2
+#   - สร้างโฟลเดอร์ DEPLOY_PATH
+#   - ครั้งแรกหลัง deploy: pm2 startup systemd -u <user> --hp /home/<user> แล้วทำตามคำสั่งที่ pm2 พิมพ์
+#
+# รัน remote ด้วย bash -lc เพื่อโหลด PATH ของ user (กรณีใช้ nvm/fnm บน Ubuntu)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rsync + OpenSSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y rsync openssh-client
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Rsync to Ubuntu server
+        env:
+          SSH_OPTS: '-i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes'
+        run: |
+          rsync -avz --delete \
+            -e "ssh $SSH_OPTS" \
+            ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}/" \
+            --exclude node_modules \
+            --exclude .env \
+            --exclude .git \
+            --exclude .github \
+            --exclude logs
+
+      - name: Write .env on server from BE_DOTENV
+        env:
+          BE_DOTENV: ${{ secrets.BE_DOTENV }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          if [ -z "$BE_DOTENV" ]; then
+            echo 'Error: set repository secret BE_DOTENV to the full .env file contents (see workflow header comments).'
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$BE_DOTENV" > /tmp/invoice-be.env
+          chmod 600 /tmp/invoice-be.env
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            /tmp/invoice-be.env "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/.env"
+          rm -f /tmp/invoice-be.env
+
+      - name: npm ci + PM2 reload on Ubuntu
+        run: |
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "bash -lc 'set -e; cd \"${{ secrets.DEPLOY_PATH }}\"; mkdir -p logs; npm ci --omit=dev; pm2 reload ecosystem.config.cjs --only invoice-api --update-env || pm2 start ecosystem.config.cjs; pm2 save'"
