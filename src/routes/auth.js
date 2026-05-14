@@ -3,6 +3,7 @@ import { query } from '../db.js'
 import {
   clearSessionCookie,
   readSessionUserId,
+  requireAuth,
   SESSION_COOKIE_NAME,
   setSessionCookie,
   signToken,
@@ -101,6 +102,105 @@ r.get('/me', async (req, res) => {
     clearSessionCookie(res)
     return res.json({ user: null })
   }
+  return res.json({ user: rows[0] })
+})
+
+/** แก้ชื่อผู้ใช้และ/หรือรหัสผ่าน (ต้องส่ง current_password เมื่อเปลี่ยนรหัส) */
+r.patch('/me', requireAuth, async (req, res) => {
+  const b = req.body || {}
+  const userId = req.userId
+  const rawName = b.user_name
+  const newName =
+    rawName !== undefined && rawName !== null
+      ? String(rawName).trim()
+      : null
+  const newPassword =
+    b.new_password !== undefined && b.new_password !== null
+      ? String(b.new_password)
+      : ''
+  const currentPassword =
+    b.current_password !== undefined && b.current_password !== null
+      ? String(b.current_password)
+      : ''
+
+  const wantName = rawName !== undefined
+  const wantPass = newPassword.length > 0
+
+  if (!wantName && !wantPass) {
+    return res.status(400).json({
+      error: 'send user_name and/or new_password to update',
+    })
+  }
+  if (wantName && !newName) {
+    return res.status(400).json({ error: 'user_name cannot be empty' })
+  }
+  if (wantPass) {
+    if (!currentPassword) {
+      return res.status(400).json({
+        error: 'current_password required to change password',
+      })
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'password min 6 characters' })
+    }
+  }
+
+  const { rows: curRows } = await query(
+    'SELECT id, user_name, password_hash FROM users WHERE id = $1',
+    [userId],
+  )
+  if (curRows.length === 0) {
+    clearSessionCookie(res)
+    return res.status(401).json({ error: 'session invalid' })
+  }
+  const cur = curRows[0]
+
+  if (wantPass) {
+    const { valid } = await verifyStoredPassword(
+      cur.password_hash,
+      currentPassword,
+    )
+    if (!valid) {
+      return res.status(401).json({ error: 'current password is incorrect' })
+    }
+  }
+
+  const sets = []
+  const vals = []
+  let n = 1
+  if (wantName && newName !== cur.user_name) {
+    sets.push(`user_name = $${n++}`)
+    vals.push(newName)
+  }
+  if (wantPass) {
+    sets.push(`password_hash = $${n++}`)
+    vals.push(await hashPassword(newPassword))
+  }
+  if (sets.length === 0) {
+    const { rows } = await query(
+      'SELECT id, user_name, created_at FROM users WHERE id = $1',
+      [userId],
+    )
+    return res.json({ user: rows[0] })
+  }
+
+  vals.push(userId)
+  try {
+    await query(
+      `UPDATE users SET ${sets.join(', ')} WHERE id = $${n}`,
+      vals,
+    )
+  } catch (e) {
+    if (e.code === '23505') {
+      return res.status(409).json({ error: 'user_name already exists' })
+    }
+    console.error(e)
+    return res.status(500).json({ error: 'server error' })
+  }
+  const { rows } = await query(
+    'SELECT id, user_name, created_at FROM users WHERE id = $1',
+    [userId],
+  )
   return res.json({ user: rows[0] })
 })
 
